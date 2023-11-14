@@ -1,0 +1,135 @@
+module Main where
+
+import DA.Date
+
+data Status
+    = Pending
+    | Screened
+    | Accepted
+    | HRRejected
+    | BusinessRejected
+        deriving (Eq, Show)
+
+data JD = JD with
+    jobId: Text
+    yearsOfExpReq: Int
+    description: Text
+        deriving (Show, Eq)
+
+template Job
+    with
+        id: Text
+        hrManager: Party
+        applications: [Application]
+        businessManager: Party
+        yearsOfExpReq: Int
+        description: Text
+    where
+        signatory hrManager
+        observer businessManager
+
+        key (hrManager, id) : (Party, Text)
+        maintainer key._1
+
+        -- Allow hrManager to add applicant after screening
+        choice AddApplication: ContractId Job
+            with
+                application: Application
+                    controller hrManager
+                    do
+                        create this with
+                            applications = applications <> [application]
+
+        -- Allows for businessManager to see all applicants who have passed screening for this job.
+        nonconsuming choice GetScreenedApplicants: [Party]
+            with
+                    controller businessManager
+                    do
+                        let applicants = map (\x -> x.applicant) applications
+                        return applicants
+
+
+        -- Allow hrManager to update the job description
+        choice UpdateDescription: ContractId Job
+            with
+                newDescription: Text
+                    controller hrManager
+                    do
+                        create this with
+                            description = newDescription
+        
+        -- Allow hrManager to update the years of experience required
+        choice UpdateYearsOfExpReq: ContractId Job
+            with
+                newYearsOfExpReq: Int
+                    controller hrManager
+                    do
+                        create this with
+                            yearsOfExpReq = newYearsOfExpReq
+
+template Application
+    with
+        applicant: Party
+        hrManager: Party
+        businessManager: Party
+        jd:  JD
+        name: Text
+        university: Text
+        gpa: Decimal
+        yearsOfExp: Int
+        applicationDate: Date
+        screenDate: Optional Date
+        note: Optional Text
+        status: Status
+    where
+        signatory applicant
+        observer hrManager, businessManager
+        
+        key (applicant, jd) : (Party, JD)
+        maintainer key._1
+
+        ensure (yearsOfExp >= 0) -- yearsOfExp is non-negative
+
+        -- simply returns the ContractId of the current contract as well as the application
+        nonconsuming choice CheckStatus: ContractId Application
+            controller applicant
+            do
+                return self
+
+        -- HRmanager can Accept/Reject the applicant with optional feedback
+        choice ScreenApplication: ContractId Application
+            with
+                pass: Bool
+                feedback: Optional Text
+            controller hrManager
+            do
+                now <- getTime
+                let today = toDateUTC now
+                if (pass) then do
+                    job <- fetchByKey @Job (hrManager,jd.jobId)
+                    exercise job._1 AddApplication with application = this
+                    create this with
+                        note = feedback
+                        status = Screened
+                        screenDate = Some today
+                else
+                    create this with
+                        note = feedback
+                        status = HRRejected
+                        screenDate = Some today
+
+        -- businessManager can accept the application
+        choice AcceptApplication: ContractId Application
+            controller businessManager
+            do
+                assertMsg "Applicant needs to be screen first." (status == Screened)
+                create this with
+                        status = Accepted
+        
+        -- businessManager can reject the application
+        choice RejectApplication: ContractId Application
+            controller businessManager
+            do
+                assertMsg "Applicant needs to be screen first." (status == Screened)
+                create this with
+                        status = BusinessRejected

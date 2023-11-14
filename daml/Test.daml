@@ -1,0 +1,211 @@
+module Test where
+
+import Main
+import Setup
+import DA.Date
+import Daml.Script
+import DA.Optional
+import DA.Time
+
+{-
+    Min 1 Full Scenario & Min 3 Happy Paths
+        + testCreateJob: hrManager can create Job contracts
+            1. hrManager creates a Job contract
+        + testCreateApplication: alice and bob both creates Applications
+            1. hrManager creates 3 jobs and JD
+            2. alice creates Application for a job given JD from hrManager
+            3. bob creates Application for a job given JD from hrManager
+            4. charlie creates Application for a job given JD from hrManager
+        + testScreenApplication: hrManager exercises ScreenApplication to pass alice's and charlie's application and fail bob's
+          and businessManager Reject alice and Accept charlie
+            1. hrManager exercises ScreenApplication to pass alice's screening and updates Job with application
+            2. hrManager exercises ScreenApplication to fail bob's screening
+            3. hrManager exercises ScreenApplication to pass charlie's screening
+            4. businessManager uses GetScreenedApplicants to check all the applicants who has passed the screening
+            5. businessManager exercises RejectApplication to reject the job application of alice
+            6. businessManager exercises AcceptApplication to accept the job application of charlie
+
+    Min 3 Unhappy Paths
+        - cantCreateNegativeYearsOfExp: applicant cannot create a application with negative years of experience
+        - cantScreenMyself: applicant cannot screen their own application
+        - cantApproveMyself: applicant cannot approve their own application
+-}
+
+-- + testCreateJob: hrManager can create Job contracts
+testCreateJob = script do
+    testParties@TestParties{..} <- setupTestParties
+    -- 1. hrManager creates a Job contract
+    job1Id <- submit hrManager do
+        createCmd Job with
+            id = "1"
+            hrManager
+            applications = []
+            businessManager
+            yearsOfExpReq = 3
+            description = "Frontend Developer Role - React"
+    return (testParties, job1Id)
+
+-- + testCreateApplication: applicant creates Applications
+testCreateApplication = script do
+    -- 1. hrManager creates jobs and JD
+    (testParties@TestParties{..}, testJobs@TestJobs{..}) <- setupJobs
+    job1 <- queryContractId hrManager testJobs.job1Id
+    let 
+        jd = JD with
+            jobId = (fromSome job1).id
+            yearsOfExpReq = (fromSome job1).yearsOfExpReq
+            description = (fromSome job1).description
+
+    -- 2. alice creates an application with the given JD from HR.
+    setTime (time(date 2023 Nov 01) 12 30 0)
+    now <- getTime
+    let today = toDateUTC now
+    aliceApplication <- submit alice do
+        createCmd Application with
+            applicant = alice
+            hrManager
+            businessManager
+            jd
+            name = "Alice"
+            university = "University of Hong Kong"
+            gpa = 3.5
+            yearsOfExp = 5
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a very diligent worker"
+            status = Pending
+
+    -- 3. bob creates an application with the given JD from HR.
+    bobApplication <- submit bob do
+        createCmd Application with
+            applicant = bob
+            hrManager
+            businessManager
+            jd
+            name = "Bob"
+            university = "Hong Kong Univeristy of Science and Technology"
+            gpa = 3.0
+            yearsOfExp = 4
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a hard worker"
+            status = Pending
+
+    -- 3. charlie creates an application with the given JD from HR.
+    charlieApplication <- submit charlie do
+        createCmd Application with
+            applicant = charlie
+            hrManager
+            businessManager
+            jd
+            name = "Charlie"
+            university = "Chinese University of Hong Kong"
+            gpa = 3.7
+            yearsOfExp = 6
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a hard worker"
+            status = Pending
+
+    return (testParties, aliceApplication, bobApplication, charlieApplication)
+
+-- + testScreenApplication: hrManager exercises ScreenApplication to pass alice's and charlie's application and fail bob's
+--   and businessManager Reject alice and Accept charlie    
+testScreenApplication = script do
+    (testParties@TestParties{..}, testJobs@TestJobs{..}, testApplications@TestApplications{..}) <- setupApplications
+
+    -- 1. hrManager exercises ScreenApplication to pass alice's screening and updates Job with application
+    aliceApplication <- submit hrManager do
+        exerciseCmd aliceApplication ScreenApplication with
+            pass = True
+            feedback = Some "This candidate is great"
+
+    -- 2. hrManager exercises ScreenApplication to fail bob's screening
+    bobApplication <- submit hrManager do
+        exerciseCmd bobApplication ScreenApplication with
+            pass = False
+            feedback = Some "This is a poor candidate"
+
+    -- 3. hrManager exercises ScreenApplication to pass charlie's screening
+    charlieApplication <- submit hrManager do
+        exerciseCmd charlieApplication ScreenApplication with
+            pass = True
+            feedback = Some "This candidate is great"
+
+    -- 4. businessManager uses GetScreenedApplicants to check all the applicants who has passed the screening
+    job1 <- queryContractKey @Job businessManager (hrManager,"1")
+
+    screenedApplications <- submit businessManager do
+        exerciseCmd (fromSome job1)._1 GetScreenedApplicants
+    
+    debug $ screenedApplications
+
+    -- 5. businessManager exercises RejectApplication to reject the job application of alice
+    aliceApplication <- submit businessManager do
+        exerciseCmd aliceApplication RejectApplication
+
+    -- 6. businessManager exercises AcceptApplication to accept the job application of charlie
+    charlieApplication <- submit businessManager do
+        exerciseCmd charlieApplication AcceptApplication
+
+    return (testParties, testJobs, aliceApplication, bobApplication, charlieApplication)
+
+-- - cantCreateNegativeYearsOfExp: applicant cannot create a application with negative years of experience
+cantCreateNegativeYearsOfExp = script do
+    -- 1. hrManager creates jobs and JD
+    (testParties@TestParties{..}, testJobs@TestJobs{..}) <- setupJobs
+    job1 <- queryContractId hrManager testJobs.job1Id
+    let 
+        jd = JD with
+            jobId = (fromSome job1).id
+            yearsOfExpReq = (fromSome job1).yearsOfExpReq
+            description = (fromSome job1).description
+
+    -- 2. alice creates an application with the given JD from HR.
+    setTime (time(date 2023 Nov 01) 12 30 0)
+    now <- getTime
+    let today = toDateUTC now
+    -- alice enters incorrectly the yearsOfExp as -1
+    aliceApplication <- submitMustFail alice do
+        createCmd Application with
+            applicant = alice
+            hrManager
+            businessManager
+            jd
+            name = "Alice"
+            university = "University of Hong Kong"
+            gpa = 3.5
+            yearsOfExp = -1
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a very diligent worker"
+            status = Pending
+    return ()
+
+-- - cantScreenMyself: applicant cannot screen their own application
+cantScreenMyself = script do
+    -- Setup Applications
+    (testParties@TestParties{..}, testJobs@TestJobs{..}, testApplications@TestApplications{..}) <- setupApplications
+
+    -- alice tries to screen herself.
+    aliceApplication <- submitMustFail alice do
+        exerciseCmd aliceApplication ScreenApplication with
+            pass = True
+            feedback = Some "This candidate is great"
+    return ()
+
+-- - cantApproveMyself: applicant cannot approve their own application
+cantApproveMyself = script do
+    -- Setup Applications
+    (testParties@TestParties{..}, testJobs@TestJobs{..}, testApplications@TestApplications{..}) <- setupApplications
+
+    -- alice is screened by hrManager
+    aliceApplication <- submit hrManager do
+        exerciseCmd aliceApplication ScreenApplication with
+            pass = True
+            feedback = Some "This candidate is great"
+
+    -- alice tries to apporve her own application
+    aliceApplication <- submitMustFail alice do
+        exerciseCmd aliceApplication AcceptApplication
+    return ()

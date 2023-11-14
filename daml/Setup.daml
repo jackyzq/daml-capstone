@@ -1,0 +1,159 @@
+module Setup where
+
+import Main
+import Daml.Script
+import DA.Optional
+import DA.Date
+
+data TestParties = TestParties with
+    alice: Party
+    bob: Party
+    charlie: Party
+    businessManager: Party
+    hrManager: Party
+    admin: Party
+
+setupTestParties : Script TestParties
+setupTestParties = script do
+    -- 1. Allocate parties with the given display name
+    admin <- allocatePartyWithHint "Admin" (PartyIdHint "ADM")
+    alice <- allocatePartyWithHint "Alice Applicant" (PartyIdHint "ALICE")
+    bob <- allocatePartyWithHint "Bob Applicant" (PartyIdHint "BOB")
+    charlie <- allocatePartyWithHint "Charlie Applicant" (PartyIdHint "Charlie")
+    businessManager <- allocatePartyWithHint "BusinessManager" (PartyIdHint "BSM")
+    hrManager <- allocatePartyWithHint "HRManager" (PartyIdHint "HRM")
+
+    return TestParties with
+        admin
+        alice
+        bob
+        charlie
+        businessManager
+        hrManager
+
+setupUsers : Script ()
+setupUsers = script do
+    (testParties@TestParties{..}, testJobs@TestJobs{..}, testApplications@TestApplications{..}) <- setupApplications
+
+    -- 2. Construct user-ids from text
+    aliceId <- validateUserId "Alice"
+    bobId <- validateUserId "Bob"
+    charlieId <- validateUserId "Charlie"
+    brunoId <- validateUserId "Bruno"
+    harleyId <- validateUserId "Harley"   
+
+    -- 3. Create users with the given rights 
+    createUser (User aliceId (Some alice)) [CanActAs alice]  
+    createUser (User bobId (Some bob)) [CanActAs bob]
+    createUser (User charlieId (Some charlie)) [CanActAs charlie]
+    createUser (User brunoId (Some businessManager)) [CanActAs businessManager]
+    createUser (User harleyId (Some hrManager)) [CanActAs admin, CanActAs hrManager]
+
+
+data TestJobs = TestJobs with
+    job1Id: ContractId Job
+    job2Id: ContractId Job
+    job3Id: ContractId Job
+
+setupJobs : Script (TestParties, TestJobs)
+setupJobs = script do
+    testParties@TestParties{..} <- setupTestParties
+    -- Creates 3 jobs
+    job1Id <- submit hrManager do
+        createCmd Job with
+            id = "1"
+            hrManager
+            applications = []
+            businessManager
+            yearsOfExpReq = 3
+            description = "Frontend Developer Role - React"
+
+    job2Id <- submit hrManager do
+        createCmd Job with
+            id = "2"
+            hrManager
+            applications = []
+            businessManager
+            yearsOfExpReq = 4
+            description = "Backend Developer Role - Java"
+
+    job3Id <- submit hrManager do
+        createCmd Job with
+            id = "3"
+            hrManager
+            applications = []
+            businessManager
+            yearsOfExpReq = 5
+            description = "DevOps Developer Role - AWS"
+        
+    return (testParties, TestJobs with {job1Id, job2Id, job3Id})
+
+data TestApplications = TestApplications with
+    aliceApplication: ContractId Application
+    bobApplication: ContractId Application
+    charlieApplication: ContractId Application
+
+
+setupApplications : Script (TestParties, TestJobs, TestApplications)
+setupApplications = script do
+    (testParties@TestParties{..}, testJobs@TestJobs{..}) <- setupJobs
+
+    -- hrManager creates a JD using information from job
+    job1 <- queryContractId hrManager testJobs.job1Id
+    let 
+        jd = JD with
+            jobId = (fromSome job1).id
+            yearsOfExpReq = (fromSome job1).yearsOfExpReq
+            description = (fromSome job1).description
+
+    -- 1. alice creates an application with the given JD from HR.
+    now <- getTime
+    let today = toDateUTC now
+    aliceApplication <- submit alice do
+        createCmd Application with
+            applicant = alice
+            hrManager
+            businessManager
+            jd
+            name = "Alice"
+            university = "University of Hong Kong"
+            gpa = 3.5
+            yearsOfExp = 5
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a very diligent worker"
+            status = Pending
+
+    -- 2. bob creates an application with the given JD from HR.
+    bobApplication <- submit bob do
+        createCmd Application with
+            applicant = bob
+            hrManager
+            businessManager
+            jd
+            name = "Bob"
+            university = "Hong Kong Univeristy of Science and Technology"
+            gpa = 3.0
+            yearsOfExp = 4
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a hard worker"
+            status = Pending
+
+    -- 3. charlie creates an application with the given JD from HR.
+    charlieApplication <- submit charlie do
+        createCmd Application with
+            applicant = charlie
+            hrManager
+            businessManager
+            jd
+            name = "Charlie"
+            university = "Chinese University of Hong Kong"
+            gpa = 3.7
+            yearsOfExp = 6
+            applicationDate = today
+            screenDate = None
+            note = Some "I am a hard worker"
+            status = Pending
+
+    return (testParties, testJobs, TestApplications with {aliceApplication, bobApplication, charlieApplication}) 
